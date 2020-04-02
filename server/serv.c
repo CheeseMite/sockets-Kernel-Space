@@ -5,7 +5,8 @@
 #include "linux/in.h"
 #include <linux/kthread.h>
 #include <linux/slab.h>
-#include <linux/net_namespace.h>
+#include <net/net_namespace.h>
+#include <asm/current.h>
 
 
 #define DAEMON_NAME     "ECHO_SERVER"
@@ -22,9 +23,11 @@
 
 struct socket *server;
 struct task_struct **workers; // 11 threads
+struct task_struct *serv;
+uint8_t connection;
 
 
-static int get_request(struct socket *sock, unsigned char *buf, size_t size){
+static int get_request(struct socket *sock,  char *buf, size_t size){
 
     struct msghdr msg;
     struct kvec vec;
@@ -50,7 +53,7 @@ static int get_request(struct socket *sock, unsigned char *buf, size_t size){
     return length;
 }
 
-static int send_request(struct socket *sock, unsigned char *buf, size_t size){
+static int send_request(struct socket *sock, char *buf, size_t size){
 
     int length;
     struct kvec vec; 
@@ -77,21 +80,36 @@ static int send_request(struct socket *sock, unsigned char *buf, size_t size){
 
 
 static int process(void *arg){
-    
-    struct socket * sock;
-    char *buf;
+    int err;
+    int msg_length;
+    struct sockaddr_in info;
+    struct socket* sock = NULL;
+    char *buf = NULL;
+    char addr[128];
 
+    // allocate memory for buffer
     buf = kmalloc(sizeof(char) * BUFF_SIZE, GFP_KERNEL);
-
-
 
     sock = (struct socket *) arg;
 
-    while(1)
+    err = kernel_getpeername(sock, (struct sockaddr *)&info);
+    
+
+    printk(DAEMON_NAME ": The adress of client : %pI4\n", &info.sin_addr.s_addr); //ntohl
+    
+    while (true) 
     {
-        get_request(sock, buf, BUFF_SIZE);
-        send_request(sock, buf, BUFF_SIZE);
-    }
+        // try to get message
+        msg_length = get_request(sock, buf, BUFF_SIZE);
+        
+        if (msg_length)
+            // if length of message > 0 then send message
+            send_request(sock, buf, BUFF_SIZE);
+        else 
+            break;
+    } 
+
+    kfree(buf);
     kernel_sock_shutdown(sock, SHUT_RDWR);
     sock_release(sock);
 }
@@ -99,23 +117,29 @@ static int process(void *arg){
 
 static int server_daemon(void *arg)
 {
-    int err;
-    int id;
-    struct socket *new_sock;
-    struct socket *server;
-    struct task_struct *worker;
+    int err = 0;   
+    struct socket *new_sock = NULL;
+    struct socket *server = NULL;
+    struct task_struct *worker = NULL;
+
+    printk(KERN_INFO "Server daemon launched!\n");
 
     server = (struct socket*) arg;
-
-    while (1)
+    
+    while (!kthread_should_stop())
     {
         err = kernel_accept(server, &new_sock, NULL);
-        
-        //id = get_free_worker();
 
-        
-        worker = kthread_run(process, &new_sock,DAEMON_NAME );
+        if ( err )
+        {
+            printk(KERN_INFO "Failed attempting kernel_accept \n");
+            continue;
+        }
+        //id = get_free_worker();
         //wake_up_process(workers[id]);
+        
+        // create new thread for each client
+        worker = kthread_run(process, (void*)new_sock,"connection%d", connection++ );
     }
 
 
@@ -132,20 +156,13 @@ static void set_addr(struct sockaddr_in *str, uint8_t family, uint8_t port, uint
     str->sin_addr.s_addr = htonl(addr);
 }
 
-extern struct net init_net;
-
 static int __init runserver(void)
 {
+    //int i;
     int err;
-    int i;
     struct sockaddr_in addr;
-    //struct net * netnamespace;
 
-     // allocating memory for socket
-    //server = (struct socket*)kmalloc(sizeof(struct socket)); 
-    //netnamespace  = get_net(netnamespace);
-
-    // creating socket 
+    // creating socket, init_net is a network namespace( net/net_namespace.h)
     err = sock_create_kern(&init_net,SOCK_FAMILY,SOCK_TYPE, 0, &server);
     printk(KERN_INFO "Server socket created\n");
     
@@ -165,8 +182,9 @@ static int __init runserver(void)
         workers[0] = kthread_create(&process, &server,'worker');
     }*/
 
-
-    workers[10] = kthread_run( &server_daemon, &server, "server daemon");
+    
+    // create and run new thread 
+    serv = kthread_run( server_daemon, (void*)server, "server daemon");
     
     
     return 0;

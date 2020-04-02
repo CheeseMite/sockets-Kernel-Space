@@ -5,7 +5,7 @@
 #include "linux/in.h"
 #include <linux/kthread.h>
 #include <linux/slab.h>
-#include <linux/net_namespace.h>
+#include <net/net_namespace.h>
 
 #define DAEMON_NAME     "CLIENT"
 /*
@@ -20,7 +20,6 @@
 
 
 struct socket * client;
-extern struct net init_net;
 
 
 static int get_request(struct socket *sock, unsigned char *buf, size_t size){
@@ -88,23 +87,35 @@ static void set_addr(struct sockaddr_in *str, uint8_t family, uint8_t port, uint
 static int __init runclient(void)
 {
     int err;
-    char *buffer;
-    struct net * netnamespace; 
     struct sockaddr_in addr;
+    char *buffer = NULL;
+    
     printk(KERN_INFO "Client is launched!");
 
     buffer = kmalloc(sizeof(char) * BUFF_SIZE, GFP_KERNEL);
 
-    //netnamespace = read_pnet(NULL);
-
     set_addr(&addr, SOCK_FAMILY, SOCK_PORT, SOCK_ADDR);
+
     err = sock_create_kern(&init_net,SOCK_FAMILY, SOCK_TYPE, 0, &client);
-    kernel_connect(client, (struct sockaddr *) &addr, sizeof(addr), NULL);
+    if (err)
+    {
+        printk(KERN_ERR "Failed to create socket\n");
+        return -1;
+    }
+
+    err = kernel_connect(client, (struct sockaddr *) &addr, sizeof(addr), NULL);
+    if (err)
+    {
+        printk(KERN_ERR "Failed to establish connection\n");
+        //return -1;
+    }
 
     strcpy(buffer, "Hello world!");
     send_request(client,buffer, 0);
     get_request(client, buffer, BUFF_SIZE);
 
+
+    kfree(buffer);
 }
 
 
@@ -113,7 +124,7 @@ static void __exit exitclient(void)
 {
     kernel_sock_shutdown(client, SHUT_RDWR);
     sock_release(client);
-    printk(KERN_INFO "Client is closed!");
+    printk(KERN_INFO "Client is closed!/n");
 
 }
 
